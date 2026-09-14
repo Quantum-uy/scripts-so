@@ -1,0 +1,558 @@
+# **9. Primera versión del script de administración del servidor**
+
+## **9.1 Descripción general**
+
+Se desarrolló un script modular de administración del servidor en Bash, alojado en el servidor Backup (192.168.10.12). El script centraliza las tareas de administración de toda la infraestructura SiGeRU desde un único punto, conectándose por SSH a los demás servidores cuando es necesario.
+
+**Ubicación:** `/home/adminmateo/scripts/`
+
+**Ejecución:** `bash ~/scripts/admin.sh`
+
+## **9.2 Estructura modular**
+
+El script se divide en un archivo principal y 7 módulos independientes:
+
+| Archivo | Módulo | Funciones |
+|---|---|---|
+| `admin.sh` | Menú principal | Carga los módulos y presenta el menú |
+| `mod_usuarios.sh` | Gestión de usuarios | Crear, eliminar, listar, info de usuarios |
+| `mod_grupos.sh` | Gestión de grupos | Crear, eliminar grupos, asignar usuarios |
+| `mod_backup.sh` | Gestión de backups | Backup manual, listar, ver logs, restaurar BD |
+| `mod_red.sh` | Gestión de red | Interfaces, rutas, ping, puertos, DNS |
+| `mod_bdd.sh` | Gestión de base de datos | Operaciones remotas vía SSH al servidor BDD |
+| `mod_firewall.sh` | Gestión de firewall | Reglas iptables/NAT, agregar, eliminar, guardar |
+| `mod_logs.sh` | Gestión de logs | Journalctl, filtrar por servicio, errores, disco |
+
+## **9.3 Script principal — admin.sh**
+
+```bash
+#!/bin/bash
+# Script de administración del servidor — SiGeRU
+# Versión 1.0
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+source "$SCRIPT_DIR/mod_usuarios.sh"
+source "$SCRIPT_DIR/mod_grupos.sh"
+source "$SCRIPT_DIR/mod_backup.sh"
+source "$SCRIPT_DIR/mod_red.sh"
+source "$SCRIPT_DIR/mod_bdd.sh"
+source "$SCRIPT_DIR/mod_firewall.sh"
+source "$SCRIPT_DIR/mod_logs.sh"
+
+menu_principal() {
+    while true; do
+        echo ""
+        echo "========================================"
+        echo "   ADMINISTRACIÓN DEL SERVIDOR - SiGeRU"
+        echo "========================================"
+        echo "1) Gestión de usuarios"
+        echo "2) Gestión de grupos"
+        echo "3) Gestión de backups"
+        echo "4) Gestión de red"
+        echo "5) Gestión de base de datos"
+        echo "6) Gestión de firewall"
+        echo "7) Gestión de logs del sistema"
+        echo "0) Salir"
+        echo "========================================"
+        read -p "Seleccione una opción: " opcion
+
+        case $opcion in
+            1) menu_usuarios ;;
+            2) menu_grupos ;;
+            3) menu_backup ;;
+            4) menu_red ;;
+            5) menu_bdd ;;
+            6) menu_firewall ;;
+            7) menu_logs ;;
+            0) echo "Saliendo..."; exit 0 ;;
+            *) echo "Opción inválida." ;;
+        esac
+    done
+}
+
+menu_principal
+```
+
+## **9.4 Módulo de usuarios — mod_usuarios.sh**
+
+```bash
+#!/bin/bash
+# Módulo: Gestión de usuarios
+
+crear_usuario() {
+    read -p "Nombre del usuario: " nombre
+    read -p "Shell (default /bin/bash): " shell
+    shell=${shell:-/bin/bash}
+    sudo useradd -m -s "$shell" "$nombre"
+    if [ $? -eq 0 ]; then
+        echo "Usuario '$nombre' creado."
+        sudo passwd "$nombre"
+    else
+        echo "Error al crear el usuario."
+    fi
+}
+
+eliminar_usuario() {
+    read -p "Nombre del usuario a eliminar: " nombre
+    read -p "¿Eliminar también su directorio home? (s/n): " confirmar
+    if [ "$confirmar" = "s" ]; then
+        sudo userdel -r "$nombre"
+    else
+        sudo userdel "$nombre"
+    fi
+    [ $? -eq 0 ] && echo "Usuario '$nombre' eliminado." || echo "Error al eliminar."
+}
+
+listar_usuarios() {
+    echo ""
+    echo "Usuarios del sistema (UID >= 1000):"
+    echo "-----------------------------------"
+    awk -F: '$3 >= 1000 && $3 < 65534 {printf "%-20s UID: %s\n", $1, $3}' /etc/passwd
+}
+
+info_usuario() {
+    read -p "Nombre del usuario: " nombre
+    if id "$nombre" &>/dev/null; then
+        echo ""
+        id "$nombre"
+        echo "Último login:"
+        lastlog -u "$nombre" 2>/dev/null || echo "No disponible"
+    else
+        echo "El usuario '$nombre' no existe."
+    fi
+}
+
+menu_usuarios() {
+    while true; do
+        echo ""
+        echo "--- GESTIÓN DE USUARIOS ---"
+        echo "1) Crear usuario"
+        echo "2) Eliminar usuario"
+        echo "3) Listar usuarios"
+        echo "4) Info de usuario"
+        echo "0) Volver"
+        read -p "Opción: " op
+        case $op in
+            1) crear_usuario ;;
+            2) eliminar_usuario ;;
+            3) listar_usuarios ;;
+            4) info_usuario ;;
+            0) return ;;
+            *) echo "Opción inválida." ;;
+        esac
+    done
+}
+```
+
+## **9.5 Módulo de grupos — mod_grupos.sh**
+
+```bash
+#!/bin/bash
+# Módulo: Gestión de grupos
+
+crear_grupo() {
+    read -p "Nombre del grupo: " nombre
+    sudo groupadd "$nombre"
+    [ $? -eq 0 ] && echo "Grupo '$nombre' creado." || echo "Error al crear el grupo."
+}
+
+eliminar_grupo() {
+    read -p "Nombre del grupo a eliminar: " nombre
+    sudo groupdel "$nombre"
+    [ $? -eq 0 ] && echo "Grupo '$nombre' eliminado." || echo "Error al eliminar."
+}
+
+agregar_usuario_grupo() {
+    read -p "Usuario: " usuario
+    read -p "Grupo: " grupo
+    sudo usermod -aG "$grupo" "$usuario"
+    [ $? -eq 0 ] && echo "'$usuario' agregado al grupo '$grupo'." || echo "Error."
+}
+
+listar_grupos() {
+    echo ""
+    echo "Grupos del sistema (GID >= 1000):"
+    echo "---------------------------------"
+    awk -F: '$3 >= 1000 {printf "%-20s GID: %s  Miembros: %s\n", $1, $3, $4}' /etc/group
+}
+
+menu_grupos() {
+    while true; do
+        echo ""
+        echo "--- GESTIÓN DE GRUPOS ---"
+        echo "1) Crear grupo"
+        echo "2) Eliminar grupo"
+        echo "3) Agregar usuario a grupo"
+        echo "4) Listar grupos"
+        echo "0) Volver"
+        read -p "Opción: " op
+        case $op in
+            1) crear_grupo ;;
+            2) eliminar_grupo ;;
+            3) agregar_usuario_grupo ;;
+            4) listar_grupos ;;
+            0) return ;;
+            *) echo "Opción inválida." ;;
+        esac
+    done
+}
+```
+
+## **9.6 Módulo de backups — mod_backup.sh**
+
+```bash
+#!/bin/bash
+# Módulo: Gestión de backups
+
+BACKUP_DIR="/backup"
+
+ejecutar_backup() {
+    echo "Ejecutando backup manual..."
+    if [ -f "$HOME/backup.sh" ]; then
+        bash "$HOME/backup.sh"
+        echo "Backup ejecutado."
+    else
+        echo "No se encontró el script de backup en $HOME/backup.sh"
+    fi
+}
+
+listar_backups() {
+    echo ""
+    echo "=== Backups de base de datos ==="
+    ls -lh "$BACKUP_DIR/db/" 2>/dev/null || echo "No hay backups de BD."
+    echo ""
+    echo "=== Backups de configuraciones ==="
+    ls -lh "$BACKUP_DIR/configs/" 2>/dev/null || echo "No hay backups de configs."
+}
+
+ver_ultimo_log() {
+    echo ""
+    ultimo=$(ls -t "$BACKUP_DIR/logs/"*.log 2>/dev/null | head -1)
+    if [ -n "$ultimo" ]; then
+        echo "Último log: $ultimo"
+        echo "---"
+        cat "$ultimo"
+    else
+        echo "No hay logs de backup."
+    fi
+}
+
+restaurar_bd() {
+    echo ""
+    echo "Backups de BD disponibles:"
+    ls -1 "$BACKUP_DIR/db/"*.sql.gz 2>/dev/null
+    echo ""
+    read -p "Archivo a restaurar (ruta completa): " archivo
+    if [ -f "$archivo" ]; then
+        read -p "¿Confirmar restauración? (s/n): " confirmar
+        if [ "$confirmar" = "s" ]; then
+            gunzip -c "$archivo" | mysql -u root
+            [ $? -eq 0 ] && echo "Base de datos restaurada." || echo "Error en la restauración."
+        fi
+    else
+        echo "Archivo no encontrado."
+    fi
+}
+
+menu_backup() {
+    while true; do
+        echo ""
+        echo "--- GESTIÓN DE BACKUPS ---"
+        echo "1) Ejecutar backup manual"
+        echo "2) Listar backups existentes"
+        echo "3) Ver último log de backup"
+        echo "4) Restaurar base de datos"
+        echo "0) Volver"
+        read -p "Opción: " op
+        case $op in
+            1) ejecutar_backup ;;
+            2) listar_backups ;;
+            3) ver_ultimo_log ;;
+            4) restaurar_bd ;;
+            0) return ;;
+            *) echo "Opción inválida." ;;
+        esac
+    done
+}
+```
+
+## **9.7 Módulo de red — mod_red.sh**
+
+```bash
+#!/bin/bash
+# Módulo: Gestión de red
+
+ver_interfaces() {
+    echo ""
+    ip -br addr show
+}
+
+ver_rutas() {
+    echo ""
+    echo "Tabla de rutas:"
+    ip route
+}
+
+probar_conectividad() {
+    read -p "IP o dominio a probar: " destino
+    echo "Probando conectividad con $destino..."
+    ping -c 4 "$destino"
+}
+
+ver_puertos() {
+    echo ""
+    echo "Puertos en escucha:"
+    sudo ss -tlnp
+}
+
+ver_dns() {
+    echo ""
+    echo "Configuración DNS:"
+    resolvectl status 2>/dev/null || cat /etc/resolv.conf
+}
+
+menu_red() {
+    while true; do
+        echo ""
+        echo "--- GESTIÓN DE RED ---"
+        echo "1) Ver interfaces de red"
+        echo "2) Ver tabla de rutas"
+        echo "3) Probar conectividad (ping)"
+        echo "4) Ver puertos en escucha"
+        echo "5) Ver configuración DNS"
+        echo "0) Volver"
+        read -p "Opción: " op
+        case $op in
+            1) ver_interfaces ;;
+            2) ver_rutas ;;
+            3) probar_conectividad ;;
+            4) ver_puertos ;;
+            5) ver_dns ;;
+            0) return ;;
+            *) echo "Opción inválida." ;;
+        esac
+    done
+}
+```
+
+## **9.8 Módulo de base de datos — mod_bdd.sh**
+
+Este módulo se ejecuta de forma remota vía SSH desde el servidor Backup hacia el servidor BDD (192.168.10.11), utilizando la clave SSH dedicada para backups.
+
+```bash
+#!/bin/bash
+# Módulo: Gestión de base de datos (remoto vía SSH al servidor BDD)
+
+BDD_HOST="192.168.10.11"
+BDD_USER="mateoadmin"
+BDD_KEY="/home/adminmateo/.ssh/id_rsa_backup"
+
+bdd_ssh() {
+    ssh -i "$BDD_KEY" "$BDD_USER@$BDD_HOST" "$1"
+}
+
+estado_mysql() {
+    echo ""
+    bdd_ssh "sudo systemctl status mysql --no-pager -l"
+}
+
+listar_bases() {
+    echo ""
+    echo "Bases de datos:"
+    bdd_ssh "sudo mysql -e 'SHOW DATABASES;'"
+}
+
+listar_tablas() {
+    read -p "Base de datos: " bd
+    echo ""
+    bdd_ssh "sudo mysql -e 'USE $bd; SHOW TABLES;'"
+}
+
+ejecutar_consulta() {
+    read -p "Base de datos: " bd
+    read -p "Consulta SQL: " consulta
+    bdd_ssh "sudo mysql -e 'USE $bd; $consulta'"
+}
+
+ver_usuarios_mysql() {
+    echo ""
+    echo "Usuarios de MySQL:"
+    bdd_ssh "sudo mysql -e 'SELECT User, Host FROM mysql.user;'"
+}
+
+menu_bdd() {
+    while true; do
+        echo ""
+        echo "--- GESTIÓN DE BASE DE DATOS ---"
+        echo "1) Estado de MySQL"
+        echo "2) Listar bases de datos"
+        echo "3) Listar tablas de una base"
+        echo "4) Ejecutar consulta SQL"
+        echo "5) Ver usuarios de MySQL"
+        echo "0) Volver"
+        read -p "Opción: " op
+        case $op in
+            1) estado_mysql ;;
+            2) listar_bases ;;
+            3) listar_tablas ;;
+            4) ejecutar_consulta ;;
+            5) ver_usuarios_mysql ;;
+            0) return ;;
+            *) echo "Opción inválida." ;;
+        esac
+    done
+}
+```
+
+## **9.9 Módulo de firewall — mod_firewall.sh**
+
+```bash
+#!/bin/bash
+# Módulo: Gestión de firewall
+
+ver_reglas() {
+    echo ""
+    echo "=== Reglas iptables ==="
+    sudo iptables -L -n -v --line-numbers
+}
+
+ver_nat() {
+    echo ""
+    echo "=== Reglas NAT ==="
+    sudo iptables -t nat -L -n -v --line-numbers
+}
+
+agregar_regla() {
+    echo "Tipo de regla:"
+    echo "1) Permitir puerto TCP entrante"
+    echo "2) Bloquear IP específica"
+    read -p "Opción: " tipo
+    case $tipo in
+        1)
+            read -p "Puerto: " puerto
+            sudo iptables -A INPUT -p tcp --dport "$puerto" -j ACCEPT
+            echo "Regla agregada: ACCEPT TCP $puerto"
+            ;;
+        2)
+            read -p "IP a bloquear: " ip
+            sudo iptables -A INPUT -s "$ip" -j DROP
+            echo "Regla agregada: DROP desde $ip"
+            ;;
+        *) echo "Opción inválida." ;;
+    esac
+}
+
+eliminar_regla() {
+    ver_reglas
+    echo ""
+    read -p "Cadena (INPUT/OUTPUT/FORWARD): " cadena
+    read -p "Número de regla a eliminar: " num
+    sudo iptables -D "$cadena" "$num"
+    [ $? -eq 0 ] && echo "Regla eliminada." || echo "Error al eliminar."
+}
+
+guardar_reglas() {
+    sudo netfilter-persistent save
+    echo "Reglas guardadas de forma persistente."
+}
+
+menu_firewall() {
+    while true; do
+        echo ""
+        echo "--- GESTIÓN DE FIREWALL ---"
+        echo "1) Ver reglas iptables"
+        echo "2) Ver reglas NAT"
+        echo "3) Agregar regla"
+        echo "4) Eliminar regla"
+        echo "5) Guardar reglas (persistente)"
+        echo "0) Volver"
+        read -p "Opción: " op
+        case $op in
+            1) ver_reglas ;;
+            2) ver_nat ;;
+            3) agregar_regla ;;
+            4) eliminar_regla ;;
+            5) guardar_reglas ;;
+            0) return ;;
+            *) echo "Opción inválida." ;;
+        esac
+    done
+}
+```
+
+## **9.10 Módulo de logs — mod_logs.sh**
+
+```bash
+#!/bin/bash
+# Módulo: Gestión de logs del sistema
+
+ver_logs_recientes() {
+    read -p "Cantidad de líneas (default 50): " lineas
+    lineas=${lineas:-50}
+    sudo journalctl -n "$lineas" --no-pager
+}
+
+logs_por_servicio() {
+    read -p "Servicio (ej: ssh, mysql, apache2): " servicio
+    read -p "Cantidad de líneas (default 30): " lineas
+    lineas=${lineas:-30}
+    sudo journalctl -u "$servicio" -n "$lineas" --no-pager
+}
+
+logs_errores() {
+    echo ""
+    echo "Errores recientes del sistema:"
+    sudo journalctl -p err -n 30 --no-pager
+}
+
+ver_auth_log() {
+    echo ""
+    echo "Últimos 30 eventos de autenticación:"
+    sudo tail -30 /var/log/auth.log
+}
+
+uso_disco() {
+    echo ""
+    echo "Uso de disco:"
+    df -h
+    echo ""
+    echo "Espacio usado por logs:"
+    sudo journalctl --disk-usage
+}
+
+menu_logs() {
+    while true; do
+        echo ""
+        echo "--- GESTIÓN DE LOGS ---"
+        echo "1) Ver logs recientes"
+        echo "2) Logs por servicio"
+        echo "3) Ver solo errores"
+        echo "4) Ver log de autenticación"
+        echo "5) Uso de disco y logs"
+        echo "0) Volver"
+        read -p "Opción: " op
+        case $op in
+            1) ver_logs_recientes ;;
+            2) logs_por_servicio ;;
+            3) logs_errores ;;
+            4) ver_auth_log ;;
+            5) uso_disco ;;
+            0) return ;;
+            *) echo "Opción inválida." ;;
+        esac
+    done
+}
+```
+
+## **9.11 Verificación del script**
+
+Se verificó el correcto funcionamiento del script ejecutándolo en el servidor Backup:
+
+- **Usuarios:** se creó el usuario `bruno` exitosamente
+- **Grupos:** se creó el grupo `oper` exitosamente
+- **Backups:** se visualizó el último log de backup
+- **Red:** se listaron interfaces, puertos en escucha y configuración DNS
+- **Base de datos:** se listaron las bases y las 19 tablas de `sigeru` remotamente vía SSH
+- **Firewall:** se visualizaron las reglas iptables y NAT
+- **Logs:** se consultaron logs del sistema con journalctl
