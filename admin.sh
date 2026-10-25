@@ -1,8 +1,15 @@
 #!/bin/bash
 # Script de administración del servidor — SiGeRU
-# Versión 1.0
+# Versión 2.0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Colores
+export VERDE='\033[0;32m'
+export ROJO='\033[0;31m'
+export AMARILLO='\033[1;33m'
+export CYAN='\033[0;36m'
+export NC='\033[0m'
 
 source "$SCRIPT_DIR/mod_usuarios.sh"
 source "$SCRIPT_DIR/mod_grupos.sh"
@@ -12,12 +19,18 @@ source "$SCRIPT_DIR/mod_bdd.sh"
 source "$SCRIPT_DIR/mod_firewall.sh"
 source "$SCRIPT_DIR/mod_logs.sh"
 
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "${ROJO}Error: este script debe ejecutarse como root (sudo).${NC}"
+    exit 1
+fi
+
 menu_principal() {
     while true; do
         echo ""
-        echo "========================================"
-        echo "   ADMINISTRACIÓN DEL SERVIDOR - SiGeRU"
-        echo "========================================"
+        echo -e "${CYAN}========================================${NC}"
+        echo -e "${CYAN}   ADMINISTRACIÓN DEL SERVIDOR - SiGeRU${NC}"
+        echo -e "${CYAN}               Versión 2.0${NC}"
+        echo -e "${CYAN}========================================${NC}"
         echo "1) Gestión de usuarios"
         echo "2) Gestión de grupos"
         echo "3) Gestión de backups"
@@ -26,7 +39,7 @@ menu_principal() {
         echo "6) Gestión de firewall"
         echo "7) Gestión de logs del sistema"
         echo "0) Salir"
-        echo "========================================"
+        echo -e "${CYAN}========================================${NC}"
         read -p "Seleccione una opción: " opcion
 
         case $opcion in
@@ -37,8 +50,8 @@ menu_principal() {
             5) menu_bdd ;;
             6) menu_firewall ;;
             7) menu_logs ;;
-            0) echo "Saliendo..."; exit 0 ;;
-            *) echo "Opción inválida." ;;
+            0) echo -e "${VERDE}Saliendo...${NC}"; exit 0 ;;
+            *) echo -e "${ROJO}Opción inválida.${NC}" ;;
         esac
     done
 }
